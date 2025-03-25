@@ -76,7 +76,7 @@ To run this project, you need Python 3.7 or later and the following dependencies
 You can install the required dependencies using `pip`:
 
 ```bash
-pip install pyTelegramBotAPI python-dotenv
+pip install pyTelegramBotAPI python-dotenv flask
 ```
 
 ## Setup and Running the Bot
@@ -101,6 +101,7 @@ pip install pyTelegramBotAPI python-dotenv
 
    ```
    BOT_TOKEN=your-telegram-bot-token-here
+   APP_URL=your-deploy-url:port (if not 443)
    ```
 
 4. **Run the bot:**

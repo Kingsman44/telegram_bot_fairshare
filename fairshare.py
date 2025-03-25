@@ -3,14 +3,22 @@ import re
 import telebot
 from dotenv import load_dotenv
 from datetime import datetime
+from flask import Flask, request, abort
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+APP_URL = os.getenv('APP_URL')  #  Your Render app URL (e.g., https://your-app-name.onrender.com)
+PORT = int(os.environ.get('PORT', '443'))
 
-# Initialize bot
+# Initialize bot and Flask app
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+
+# Set up logging (optional, but helpful for debugging)
+logging.basicConfig(level=logging.INFO)
 
 # Store group expenses and user balances (in-memory storage)
 transaction_ledger = []  # To store transactions in the group
@@ -38,18 +46,18 @@ def add_expense_from_message(message):
         # Extract numbers from the message (looking for a valid number)
         amount = None
         amounts = re.findall(r"\b\d+\.\d+|\d+\b", message.text)  # Find any numbers in the message
-        
-        # If no numbers were found or the amount is invalid, return
+
+        # If no numbers were found or the amount is invalid, return return
         if not amounts:
             return None
-        
+
         # Convert the first number found into a float
         amount = float(amounts[0])
-        
+
         # Check that the amount is positive
         if amount <= 0:
             return None
-        
+
         # If a user wrote the amount, they paid this amount, others should pay them
         amount_per_user = amount / len(users_in_group)  # Divide the amount equally among all members
 
@@ -70,7 +78,7 @@ def add_expense_from_message(message):
                 if user not in user_balances[message.from_user.username]:
                     user_balances[message.from_user.username][user] = 0
                 user_balances[message.from_user.username][user] += amount_per_user
-        
+
         # Record the transaction in the ledger
         transaction_id = generate_transaction_id()
         transaction_ledger.append({
@@ -97,7 +105,7 @@ def add_expense(message):
         amount_and_users = command[1].split(" ")
         amount = float(amount_and_users[0])  # First part is the amount
         users = amount_and_users[1] if len(amount_and_users) > 1 else ""
-        
+
         # Validate that the amount is positive
         if amount <= 0:
             bot.reply_to(message, "Amount should be greater than zero.")
@@ -185,7 +193,7 @@ def add_expense_to_user(message):
     if len(command) != 3:
         bot.reply_to(message, "Incorrect format. Use /addto {userpaid} {amount}")
         return
-    
+
     user_paid = command[1]
     try:
         amount = float(command[2])
@@ -212,7 +220,7 @@ def add_expense_to_user(message):
             user_balances[user] = {}
         if user_paid not in user_balances[user]:
             user_balances[user][user_paid] = 0
-        
+
         # If the user paid, they receive the full amount, and others owe them
         if user == user_paid:
             user_balances[user][user_paid] += amount - amount_per_user  # The paid amount minus their own share
@@ -222,7 +230,7 @@ def add_expense_to_user(message):
         # Ensure the balance is stored in the reverse direction (this ensures consistency)
         if user_paid not in user_balances[user]:
             user_balances[user][user_paid] = 0
-        
+
         if user != user_paid:
             user_balances[user_paid][user] = user_balances.get(user_paid, {}).get(user, 0) + amount_per_user
 
@@ -259,18 +267,18 @@ def pay_debt(message):
         payer = message.from_user.username
         payee = command[1]
         amount = float(command[2])
-        
+
         if payer not in user_balances or payee not in user_balances:
             bot.reply_to(message, "Both users must be registered.")
             return
-        
-        if user_balances[payer].get(payee, 0) < amount:
-            bot.reply_to(message, f"You don't owe {payee} that much!")
+
+        if amount <= 0:
+            bot.reply_to(message, "Amount must be greater than zero.")
             return
-        
+
         # Update the balances
-        user_balances[payer][payee] -= amount
-        user_balances[payee][payer] += amount
+        user_balances[payer][payee] += amount
+        user_balances[payee][payer] -= amount
 
         # Record the payment transaction
         transaction_id = generate_transaction_id()
@@ -279,7 +287,7 @@ def pay_debt(message):
             'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'amount': amount,
             'payer': payer,
-            'users': [payer, payee]
+            'users': [payee]
         })
 
         # Respond with the transaction details
@@ -295,7 +303,6 @@ def pay_debt(message):
 
     except ValueError:
         bot.reply_to(message, "Invalid amount. Please provide a valid number.")
-
 
 # Command to revert a transaction
 @bot.message_handler(commands=['revert'])
@@ -343,13 +350,13 @@ def revert_transaction(message):
 def check_balance(message):
     # Parse the command and check if a username is specified
     command = message.text.split(' ', 1)
-    
+
     # If no username is provided, use the sender's username
     if len(command) == 1:
         username = message.from_user.username
     else:
         username = command[1]
-    
+
     # Check if the user is registered
     if username not in user_balances:
         bot.reply_to(message, f"{username} is not registered.")
@@ -388,11 +395,11 @@ def show_all_transactions(message):
     if not transaction_ledger:
         bot.reply_to(message, "No transactions have been recorded.")
         return
-    
+
     report = []
     for transaction in transaction_ledger:
         report.append(f"Date: {transaction['date']}\nTransaction ID: {transaction['id']}\nAmount: {transaction['amount']}\nPaid By: {transaction['payer']}\nUsers: {', '.join(transaction['users'])}")
-    
+
     # Join the report lines and send to user
     report_message = "\n\n".join(report)
     bot.reply_to(message, report_message)
@@ -402,14 +409,14 @@ def show_all_transactions(message):
 def show_my_transactions(message):
     user_name = message.from_user.username
     report = []
-    
+
     for transaction in transaction_ledger:
         if transaction['payer'] == user_name:
             report.append(f"Date: {transaction['date']}\nTransaction ID: {transaction['id']}\nAmount: {transaction['amount']}\nPaid By: {transaction['payer']}\nUsers: {', '.join(transaction['users'])}")
 
     if not report:
         report.append("No transactions recorded.")
-    
+
     # Join the report lines and send to user
     report_message = "\n\n".join(report)
     bot.reply_to(message, f"Transaction details of {user_name}:\n\n" + report_message)
@@ -420,7 +427,7 @@ def list_users(message):
     if not users_in_group:
         bot.reply_to(message, "No users have been registered yet.")
         return
-    
+
     user_list = "\n".join(users_in_group)
     bot.reply_to(message, f"Registered users:\n\n{user_list}")
 
@@ -430,7 +437,7 @@ def remove_user(message):
     try:
         chat_admins = bot.get_chat_administrators(message.chat.id)
         is_admin = any(admin.user.username == message.from_user.username for admin in chat_admins)
-        
+
         if not is_admin:
             bot.reply_to(message, "You do not have permission to remove users.")
             return
@@ -443,22 +450,120 @@ def remove_user(message):
     if len(command) != 2:
         bot.reply_to(message, "Incorrect format. Use /remove {username}.")
         return
-    
+
     username = command[1]
-    
+
     if username in users_in_group:
         users_in_group.remove(username)
         # Remove the user's balance info
         if username in user_balances:
             del user_balances[username]
-        
+
         # Remove the user's balances from others
         for other_user in user_balances:
             if username in user_balances[other_user]:
                 del user_balances[other_user][username]
-        
+
         bot.reply_to(message, f"User {username} has been removed from the group.")
     else:
         bot.reply_to(message, f"User {username} is not registered in the group.")
 
-bot.infinity_polling()
+# Command to restore data
+@bot.message_handler(commands=['restore'])
+def restore_data(message):
+    # Expected data format
+    # Date: 2025-03-22 14:28:40
+    # Transaction ID: 1
+    # Amount: 46.0
+    # Paid By: abhi99p
+    # Users: AloneJaat02, Kingsmanz, abhi99p
+
+    if message.reply_to_message:
+        data_to_restore = message.reply_to_message.text
+        transactions = data_to_restore.strip().split('\n\n')  # Split into individual transactions
+
+        global transaction_ledger, users_in_group, user_balances  # Make sure we're modifying the global variables
+        transaction_ledger = []
+        users_in_group = set()
+        user_balances = {}
+
+        for transaction_text in transactions:
+            try:
+                # Parse each transaction
+                lines = transaction_text.split('\n')
+                date_str = lines[0].split(': ')[1]
+                transaction_id = int(lines[1].split(': ')[1])
+                amount = float(lines[2].split(': ')[1])
+                payer = lines[3].split(': ')[1]
+                users_str = lines[4].split(': ')[1]
+                users = [user.strip() for user in users_str.split(',')]
+
+                # Add users to the group, and initialize their balances
+                for user in users:
+                    if user not in users_in_group:
+                        users_in_group.add(user)
+                        initialize_user_balance(user)
+
+                # Reconstruct the transaction
+                transaction_ledger.append({
+                    'id': transaction_id,
+                    'date': date_str,
+                    'amount': amount,
+                    'payer': payer,
+                    'users': users
+                })
+
+                # Update user balances based on the transaction
+                amount_per_user = amount / len(users)
+                for user in users:
+                    if user != payer:
+                        user_balances[user][payer] -= amount_per_user
+                        user_balances[payer][user] += amount_per_user
+
+            except Exception as e:
+                bot.reply_to(message, f"Error processing transaction: {e}. Skipping.")
+
+        bot.reply_to(message, "Data restored successfully.")
+    else:
+        bot.reply_to(message, "Please reply to a message containing the transaction data to restore.")
+
+# Command to wipe all data.  Restricted to a specific user.
+@bot.message_handler(commands=['wipedata'])
+def wipe_data(message):
+    if message.from_user.username == "Kingsmanz":  # Only allow this user to use this command
+        global transaction_ledger, users_in_group, user_balances # Access the global variables
+        transaction_ledger = []
+        users_in_group = set()
+        user_balances = {}
+        bot.reply_to(message, "All data has been wiped.")
+    else:
+        bot.reply_to(message, "You do not have permission to wipe the data.")
+
+# Set webhook
+@app.route('/', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])  # Pass list of updates
+        return '', 200
+    else:
+        abort(403)
+
+@app.route('/')
+def index():
+    return "Hello!" #Ensure a 200 OK response
+
+if __name__ == "__main__":
+    # Remove webhook
+    bot.delete_webhook()
+
+    # Set webhook
+    if APP_URL:
+        bot.set_webhook(url=f"{APP_URL}")
+        logging.info(f"Webhook set to: {APP_URL}")
+    else:
+        logging.warning("APP_URL is not set.  Make sure to set it if you need webhooks.")
+
+    # Start the Flask app
+    app.run(host="0.0.0.0", port=PORT)
